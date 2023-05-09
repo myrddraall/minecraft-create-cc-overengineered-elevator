@@ -156,7 +156,7 @@ function ctrl_handleModemMessages()
         elseif (msg.type == MESSAGE_TYPE.FLOOR_INIT) then
             print("Floor init message received");
             ctrl_updateFloor(msg);
-            ctrl_sendState(msg.id)
+            ctrl_sendState(msg.id);
         else
             print("Unknown message received");
             print(pretty.pretty_print(data));
@@ -308,9 +308,17 @@ end
 function floor_handleModemMessages()
     while true do
         local msg = util_getRednetMessage();
-        if (msg.type == "ctrl_init") then
+        if (msg.type == MESSAGE_TYPE.CTRL_INIT) then
             print("ctrl init message received");
             floor_sendState(msg.id);
+        elseif (msg.type == MESSAGE_TYPE.CTRL_STATE) then
+            print("ctrl state message received");
+            
+            floor_ctrl_state = msg.payload.state;
+            floor_ctrl_state.ctrlId = msg.id;
+
+            print(pretty.pretty_print(floor_ctrl_state));
+        
         else
             print("Unknown message received");
             print(pretty.pretty_print(data));
