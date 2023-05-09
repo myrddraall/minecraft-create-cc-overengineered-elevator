@@ -14,14 +14,13 @@ local ctrl_floors = {};
 local ctrl_state = {
     elevatorIsPassingFloorId = nil,
     elevatorIsStoppedOnFloorId = nil,
+    elevatorIsMoving = false,
     allDoorsAreClosed = false,
-
     breakIsOn = true,
     direction = "up",
     isStopped = false,
     isHome = false,
     isResetting = false
-
 };
 
 local ctrl_sides = {
@@ -29,7 +28,8 @@ local ctrl_sides = {
     directionCtrl = "left",
     diskDrive = "right",
     rednet = "top",
-    detector = "bottom"
+    detectorHome = "bottom",
+    detectorMoving = "front"
 };
 
 function ctrl_initialize()
@@ -53,8 +53,7 @@ function ctrl_initialize()
     local function handleModemInitMessage()
         while true do
             local msg = util_getRednetMessage();
-            if (msg.type == MESSAGE_TYPE.FLOOR_STATE) then
-                print("Floor state message received");
+            if (msg.type == MESSAGE_TYPE.FLOOR_INIT or msg.type == MESSAGE_TYPE.FLOOR_STATE) then
                 ctrl_updateFloor(msg);
             else
                 print("Unknown message received");
@@ -66,13 +65,16 @@ function ctrl_initialize()
     -- trigger floor init and wait for either update messages or timeout
     print("Initializing floors");
     parallel.waitForAny(handleModemInitMessage, sendInitMessage);
-    print("Floors initialized");
 
     if (#ctrl_floors == 0) then
-        print("No floors found, exiting");
+        print("No floors found");
+        return false;
+    elseif (#ctrl_floors == 1) then
+        print("An elevator with only one floor is not an elevator");
         return false;
     end
 
+    print("Floors initialized");
     if (ctrl_state.elevatorIsStoppedOnFloorId == nil) then
         print("Elevator is not stopped on any floor, raising to the nearest floor");
         return ctrl_resetElevator();
@@ -86,6 +88,35 @@ end
 function ctrl_resetElevator()
     ctrl_setBreak(false);
     ctrl_setDirection("up");
+
+    -- wait for elevator to start moving
+
+    local function waitForElevatorToStartMoving()
+        while not ctrl_isMoving() do
+            os.pullEvent("redstone");
+        end
+        print("Elevator is moving");
+    end
+
+    parallel.waitForAny(waitForElevatorToStartMoving, function()
+        sleep(2);
+    end);
+
+    if (not ctrl_isMoving()) then
+        print("Elevator did not start moving.");
+        print("Elevator may be disconneced. trying to move it down.")
+        ctrl_setDirection("down");
+
+        parallel.waitForAny(waitForElevatorToStartMoving, function()
+            sleep(10);
+        end);
+
+        if (not ctrl_isMoving()) then
+            print("Elevator did not start moving.");
+            print("Elevator may be stuck or missing. Aborting reset.")
+            return false;
+        end
+    end
 
     ctrl_state.isResetting = true;
     ctrl_sendState();
@@ -144,7 +175,11 @@ function ctrl_resetElevator()
 end
 
 function ctrl_isHome()
-    return rs.getInput(ctrl_sides.detector);
+    return rs.getInput(ctrl_sides.detectorHome);
+end
+
+function ctrl_isMoving()
+    return not rs.getInput(ctrl_sides.detectorMoving);
 end
 
 function ctrl_handleModemMessages()
@@ -207,6 +242,7 @@ function ctrl_updateState()
     ctrl_state.direction = ctrl_getDirection();
     ctrl_state.isStopped = ctrl_state.elevatorIsStoppedOnFloorId ~= nil;
     ctrl_state.isHome = ctrl_isHome();
+    ctrl_state.isMoving = ctrl_isMoving();
 end
 
 function ctrl_sendState(replyChannel)
@@ -253,7 +289,10 @@ end
 
 -- Main loop for controller
 function ctrl_main()
-    ctrl_initialize();
+    while not ctrl_initialize() do
+        print("Initialization failed, retrying in 5 seconds...");
+        sleep(5);
+    end
     parallel.waitForAll(ctrl_handleModemMessages);
 end
 
@@ -271,10 +310,10 @@ local floor_state = {
 };
 
 local floor_sides = {
-    rednet = "front",
+    rednet = "back",
     doorCtrl = "bottom",
-    detectDoor = "left",
-    detectStopped = "back",
+    detectDoor = "right",
+    detectStopped = "front",
     detectPassing = "top"
 };
 
@@ -307,18 +346,21 @@ end
 
 function floor_handleModemMessages()
     while true do
+        print("Waiting for message...");
         local msg = util_getRednetMessage();
+        print("Message received");
+
         if (msg.type == MESSAGE_TYPE.CTRL_INIT) then
             print("ctrl init message received");
             floor_sendState(msg.id);
         elseif (msg.type == MESSAGE_TYPE.CTRL_STATE) then
             print("ctrl state message received");
-            
+
             floor_ctrl_state = msg.payload.state;
             floor_ctrl_state.ctrlId = msg.id;
 
             print(pretty.pretty_print(floor_ctrl_state));
-        
+
         else
             print("Unknown message received");
             print(pretty.pretty_print(data));
@@ -365,6 +407,7 @@ end
 
 function util_getRednetMessage()
     local _, _, _, replyChannel, data, distance = os.pullEvent("modem_message");
+    print("Received message from " .. replyChannel .. " at distance " .. distance);
     local message = {
         id = replyChannel,
         distance = distance,
